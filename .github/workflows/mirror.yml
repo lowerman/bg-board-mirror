@@ -2,7 +2,9 @@ name: Mirror BG leaderboards
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    # Off-round minutes on purpose: GitHub's :00/:30 cron slots are the most
+    # overloaded and get delayed or dropped; odd minutes fire far more reliably.
+    - cron: "7,37 * * * *"
   workflow_dispatch:
   push:
     branches: [main]
