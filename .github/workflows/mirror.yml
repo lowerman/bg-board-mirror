@@ -1,0 +1,65 @@
+name: Mirror BG leaderboards
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start from the current mirror state (keeps old data if a region fails)
+        run: |
+          mkdir out
+          for KEY in EU US AP CN EU_duo US_duo AP_duo CN_duo; do
+            curl -fsSL --max-time 30 \
+              "https://raw.githubusercontent.com/${{ github.repository }}/mirror/$KEY.txt" \
+              -o "out/$KEY.txt" || true
+          done
+          curl -fsSL --max-time 30 \
+            "https://raw.githubusercontent.com/${{ github.repository }}/mirror/updated.txt" \
+            -o out/updated.txt || true
+          touch out/updated.txt
+
+      - name: Fetch boards from bgrank.fly.dev
+        run: |
+          for KEY in EU US AP CN EU_duo US_duo AP_duo CN_duo; do
+            ok=0
+            for try in 1 2 3; do
+              if curl -fsSL --max-time 60 "https://bgrank.fly.dev/$KEY/" -o tmp.txt; then
+                # Sanity: a real board is non-trivial and uses the BGrank line format.
+                if [ "$(wc -c < tmp.txt)" -gt 1024 ] && grep -q "<br />" tmp.txt; then
+                  mv tmp.txt "out/$KEY.txt"
+                  grep -v "^$KEY " out/updated.txt > up.tmp || true
+                  echo "$KEY $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> up.tmp
+                  mv up.tmp out/updated.txt
+                  ok=1
+                  break
+                fi
+              fi
+              sleep 5
+            done
+            if [ "$ok" -ne 1 ]; then
+              echo "WARN: $KEY fetch failed, keeping the previous copy"
+            fi
+          done
+          echo "--- manifest ---"
+          cat out/updated.txt
+
+      - name: Publish to the mirror branch (single commit, no history growth)
+        run: |
+          cd out
+          git init -b mirror
+          git config user.name "board-mirror-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Mirror update $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push --force \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+            mirror
