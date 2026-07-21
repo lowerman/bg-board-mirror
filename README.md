@@ -1,8 +1,10 @@
 # bg-board-mirror
 
 A scheduled mirror of the Hearthstone Battlegrounds official leaderboards, refreshed
-every ~30 minutes from [BGrank's public mirror](https://github.com/IBM5100o/BGrank_bot)
-(`bgrank.fly.dev`) by a GitHub Action.
+every ~30 minutes by a GitHub Action. EU/US/AP boards (solo and duos) are scraped
+**directly from Blizzard's public leaderboard API**; [BGrank's mirror](https://github.com/IBM5100o/BGrank_bot)
+(`bgrank.fly.dev`) serves as the fallback source and as the primary one for CN
+(which lives on a separate Chinese API).
 
 It exists because `fly.dev` is unreliable or unreachable from some networks
 (notably many Russian ISPs), while `raw.githubusercontent.com` stays accessible.

@@ -16,7 +16,7 @@ jobs:
   mirror:
     runs-on: ubuntu-latest
     steps:
-      - name: Start from the current mirror state (keeps old data if a region fails)
+      - name: Start from the current mirror state (keeps old data if a source fails)
         run: |
           mkdir out
           for KEY in EU US AP CN EU_duo US_duo AP_duo CN_duo; do
@@ -29,28 +29,86 @@ jobs:
             -o out/updated.txt || true
           touch out/updated.txt
 
-      - name: Fetch boards from bgrank.fly.dev
+      - name: Fetch boards (official Blizzard API first, BGrank mirror as fallback)
         run: |
-          for KEY in EU US AP CN EU_duo US_duo AP_duo CN_duo; do
-            ok=0
+          stamp() { # KEY — record refresh time in the manifest
+            grep -v "^$1 " out/updated.txt > up.tmp || true
+            echo "$1 $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> up.tmp
+            mv up.tmp out/updated.txt
+          }
+
+          fetch_official() { # KEY REGION LEADERBOARD_ID -> out/KEY.txt
+            local KEY="$1" REGION="$2" LB="$3"
+            local API="https://hearthstone.blizzard.com/en-us/api/community/leaderboardsData"
+            local dir="pages_$KEY"
+            mkdir -p "$dir"
+            curl -fsSL --retry 2 --max-time 30 \
+              "$API?region=$REGION&leaderboardId=$LB&page=1" -o "$dir/p1.json" || return 1
+            local pages size
+            pages=$(jq -r '.leaderboard.pagination.totalPages // 0' "$dir/p1.json")
+            size=$(jq -r '.leaderboard.pagination.totalSize // 0' "$dir/p1.json")
+            [ "$pages" -ge 1 ] 2>/dev/null || return 1
+            [ "$pages" -gt 800 ] && pages=800
+            if [ "$pages" -gt 1 ]; then
+              seq 2 "$pages" | xargs -P 3 -I{} sh -c \
+                "curl -fsSL --retry 2 --max-time 30 '$API?region=$REGION&leaderboardId=$LB&page={}' -o '$dir/p{}.json' || true"
+            fi
+            : > "$dir/lines.txt"
+            local i
+            for i in $(seq 1 "$pages"); do
+              [ -f "$dir/p$i.json" ] && \
+                jq -r '.leaderboard.rows[] | select(.accountid != null) | "\(.accountid) \(.rating)"' \
+                  "$dir/p$i.json" >> "$dir/lines.txt" 2>/dev/null
+            done
+            local count
+            count=$(wc -l < "$dir/lines.txt")
+            # Accept only a complete-looking board: a partial scrape must not
+            # replace yesterday's full data (small drift vs totalSize is fine —
+            # the ladder moves while we page through it).
+            [ "$count" -ge 100 ] || return 1
+            [ "$count" -ge $((size - 100)) ] || return 1
+            awk 'NR==1{printf "%s",$0; next}{printf "\n<br />%s",$0}' "$dir/lines.txt" > "out/$KEY.txt"
+            echo "OK official $KEY: $count entries ($pages pages)"
+            return 0
+          }
+
+          fetch_bgrank() { # KEY -> out/KEY.txt (the legacy source)
+            local KEY="$1" try
             for try in 1 2 3; do
               if curl -fsSL --max-time 60 "https://bgrank.fly.dev/$KEY/" -o tmp.txt; then
-                # Sanity: a real board is non-trivial and uses the BGrank line format.
                 if [ "$(wc -c < tmp.txt)" -gt 1024 ] && grep -q "<br />" tmp.txt; then
                   mv tmp.txt "out/$KEY.txt"
-                  grep -v "^$KEY " out/updated.txt > up.tmp || true
-                  echo "$KEY $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> up.tmp
-                  mv up.tmp out/updated.txt
-                  ok=1
-                  break
+                  echo "OK bgrank $KEY"
+                  return 0
                 fi
               fi
               sleep 5
             done
-            if [ "$ok" -ne 1 ]; then
-              echo "WARN: $KEY fetch failed, keeping the previous copy"
+            return 1
+          }
+
+          # EU/US/AP (+duo): scraped straight from the official API — no
+          # third-party dependency; BGrank's mirror remains the fallback.
+          for SPEC in "EU EU battlegrounds" "US US battlegrounds" "AP AP battlegrounds" \
+                      "EU_duo EU battlegroundsduo" "US_duo US battlegroundsduo" "AP_duo AP battlegroundsduo"; do
+            set -- $SPEC
+            KEY="$1"; REGION="$2"; LB="$3"
+            if fetch_official "$KEY" "$REGION" "$LB" || fetch_bgrank "$KEY"; then
+              stamp "$KEY"
+            else
+              echo "WARN: $KEY failed everywhere, keeping the previous copy"
             fi
           done
+
+          # CN lives on a separate Chinese API — sourced via BGrank while it lasts.
+          for KEY in CN CN_duo; do
+            if fetch_bgrank "$KEY"; then
+              stamp "$KEY"
+            else
+              echo "WARN: $KEY failed, keeping the previous copy"
+            fi
+          done
+
           echo "--- manifest ---"
           cat out/updated.txt
 
