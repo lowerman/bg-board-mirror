@@ -63,10 +63,14 @@ jobs:
             local count
             count=$(wc -l < "$dir/lines.txt")
             # Accept only a complete-looking board: a partial scrape must not
-            # replace yesterday's full data (small drift vs totalSize is fine —
-            # the ladder moves while we page through it).
-            [ "$count" -ge 100 ] || return 1
-            [ "$count" -ge $((size - 100)) ] || return 1
+            # replace yesterday's full data. Completeness is judged against
+            # Blizzard's own totalSize — a tiny board right after a season
+            # reset is complete and legitimate (an absolute floor here kept
+            # serving last season's copy for days each new season). The drift
+            # allowance covers the ladder moving while we page through it.
+            [ "$count" -ge 1 ] || return 1
+            local drift=$(( size / 20 )); [ "$drift" -lt 100 ] || drift=100
+            [ "$count" -ge $((size - drift)) ] || return 1
             awk 'NR==1{printf "%s",$0; next}{printf "\n<br />%s",$0}' "$dir/lines.txt" > "out/$KEY.txt"
             echo "OK official $KEY: $count entries ($pages pages)"
             return 0
@@ -76,7 +80,7 @@ jobs:
             local KEY="$1" try
             for try in 1 2 3; do
               if curl -fsSL --max-time 60 "https://bgrank.fly.dev/$KEY/" -o tmp.txt; then
-                if [ "$(wc -c < tmp.txt)" -gt 1024 ] && grep -q "<br />" tmp.txt; then
+                if [ "$(wc -c < tmp.txt)" -gt 20 ] && grep -q "<br />" tmp.txt; then
                   mv tmp.txt "out/$KEY.txt"
                   echo "OK bgrank $KEY"
                   return 0
